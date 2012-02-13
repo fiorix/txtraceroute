@@ -1,0 +1,19 @@
+This is how it works:
+
+$ sudo python txtraceroute.py google.com
+Tracing 74.125.225.116
+..........!
+01. 192.168.214.1 (Reserved)
+02. 192.168.196.11 (Reserved)
+03. 64.7.137.161 (Canada, Ontario, Waterloo)
+04. 64.7.130.17 (Canada, Ontario, Kitchener)
+05. 67.43.129.248 (Canada, Ontario, Brantford)
+06. 206.108.34.6 (Canada, Ontario, Toronto)
+07. 209.85.255.232 (United States, California, Mountain View)
+08. 216.239.46.162 (United States, California, Mountain View)
+09. 72.14.237.132 (United States, California, Mountain View)
+10. 209.85.240.150 (United States, California, Mountain View)
+11. 74.125.225.116 (United States, California, Mountain View)
+
+Everything else is in the code. :)
+
