@@ -272,7 +272,7 @@ class Traceroute(object):
             # disassemble referenced ip header
             ref = iphdr.disassemble(pkt[28:48])
             if not self.hops.get(ref.id):
-                defer.returnValue(None)
+                return
             hop_id = ref.id
 
         if hop_id is not None:
