@@ -147,7 +147,11 @@ class Hop(object):
             location = ""
         else:
             location = " (%s)" % (self.location)
-        return "%02d. %s%s" % (self.ttl, self.ip, location)
+        if self.seconds == -1:
+            ping = ""
+        else:
+            ping = " %0.3fs" % self.seconds
+        return "%02d. % 15s%s%s" % (self.ttl, self.ip, ping, location)
 
 
 class Traceroute(object):
@@ -309,9 +313,19 @@ def trace(target):
 
 def main():
     try:
-        target = socket.gethostbyname(sys.argv[1])
+        target = sys.argv[1]
     except:
         print("use: %s target" % sys.argv[0])
+        sys.exit(1)
+
+    try:
+        target = socket.gethostbyname(target)
+    except Exception, e:
+        print("Could not resolve: %s\n%s" % (target, str(e)))
+        sys.exit(1)
+
+    if os.getuid() != 0:
+        print("Traceroute needs root privileges for the raw socket")
         sys.exit(1)
 
     reactor.callWhenRunning(trace, target)
