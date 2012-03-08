@@ -275,8 +275,10 @@ class TracerouteProtocol(object):
         hop = self.hops[-1]
         if not hop.found:
             if hop.tries < self.settings.get("max_tries", 3):
+                # retry
                 self.out_queue.append(hop)
             else:
+                # give up and move forward
                 self.hopFound(hop, None, None)
 
     def doWrite(self):
