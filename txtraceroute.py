@@ -1,19 +1,5 @@
 #!/usr/bin/env python
 # coding: utf-8
-#
-# Copyright 2010 Alexandre Fiori
-#
-# Licensed under the Apache License, Version 2.0 (the "License"); you may
-# not use this file except in compliance with the License. You may obtain
-# a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
-# WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
-# License for the specific language governing permissions and limitations
-# under the License.
 
 import json
 import operator
@@ -23,8 +9,12 @@ import struct
 import sys
 import time
 
-from twisted.internet import defer, reactor, task
+from twisted.internet import defer
+from twisted.internet import reactor
+from twisted.internet import threads
+from twisted.python import usage
 from twisted.web.client import getPage
+
 
 class iphdr(object):
     def __init__(self, proto=socket.IPPROTO_ICMP, src="0.0.0.0", dst=None):
@@ -67,8 +57,8 @@ class iphdr(object):
     def __repr__(self):
         return "IP (tos %s, ttl %s, id %s, frag %s, proto %s, length %s) " \
                "%s -> %s" % \
-               (self.tos, self.ttl, self.id, self.frag, self.proto, self.length,
-                self.src, self.dst)
+               (self.tos, self.ttl, self.id, self.frag, self.proto,
+                self.length, self.src, self.dst)
 
 
 class icmphdr(object):
@@ -92,7 +82,7 @@ class icmphdr(object):
         if len(data) & 1:
             data += "\0"
         cksum = reduce(operator.add,
-                       struct.unpack('!%dH' % (len(data)>>1), data))
+                       struct.unpack('!%dH' % (len(data) >> 1), data))
         cksum = (cksum >> 16) + (cksum & 0xffff)
         cksum += (cksum >> 16)
         cksum = (cksum & 0xffff) ^ 0xffff
@@ -111,224 +101,259 @@ class icmphdr(object):
 
 
 @defer.inlineCallbacks
-def geolocate(ip):
+def geoip_lookup(ip):
     try:
         r = yield getPage("http://freegeoip.net/json/%s" % ip)
         d = json.loads(r)
         items = [d["country_name"], d["region_name"], d["city"]]
         text = ", ".join([s for s in items if s])
         defer.returnValue(text.encode("utf-8"))
-    except Exception, e:
+    except Exception:
         defer.returnValue("Unknown location")
 
 
+@defer.inlineCallbacks
+def reverse_lookup(ip):
+    try:
+        r = yield threads.deferToThread(socket.gethostbyaddr, ip)
+        defer.returnValue(r[0])
+    except Exception:
+        defer.returnValue(None)
+
+
 class Hop(object):
-    def __init__(self, ttl):
-        self.ttl = ttl
+    def __init__(self, target, ttl):
         self.found = False
         self.tries = 0
         self.last_try = 0
-        self.ip = None
-        self.location = None
+        self.remote_ip = None
+        self.remote_icmp = None
+        self.remote_host = None
+        self.location = ""
+
+        self.ttl = ttl
+        self.ip = iphdr(dst=target)
+        self.ip.ttl = ttl
+        self.ip.id += ttl
+
+        self.icmp = icmphdr("traceroute")
+        self.icmp.id = self.ip.id
+        self.ip.data = self.icmp.assemble()
+
+        self._pkt = self.ip.assemble()
 
     @property
-    def number(self):
-        return self.ttl
-
-    @property
-    def seconds(self):
-        if self.found is False:
-            return -1
-        else:
-            return self.found - self.last_try
+    def pkt(self):
+        self.tries += 1
+        self.last_try = time.time()
+        return self._pkt
 
     def __repr__(self):
-        if self.ip == "??" or self.location is None:
-            location = ""
+        if self.found:
+            if self.remote_host:
+                ip = ":: %s" % self.remote_host
+            else:
+                ip = ":: %s" % self.remote_ip.src
+            ping = "%0.3fs" % (self.found - self.last_try)
         else:
-            location = " (%s)" % (self.location)
-        if self.seconds == -1:
-            ping = ""
-        else:
-            ping = " %0.3fs" % self.seconds
-        return "%02d. % 15s%s%s" % (self.ttl, self.ip, ping, location)
+            ip = "??"
+            ping = "-"
+
+        location = ":: %s" % self.location if self.location else ""
+        return "%02d. %s %s %s" % (self.ttl, ping, ip, location)
 
 
-class Traceroute(object):
-    def __init__(self, target, hopfound_callback=None,
-                 max_hops=30, retries=3, timeout=2):
-        fd = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_ICMP)
-        fd.setsockopt(socket.IPPROTO_IP, socket.IP_HDRINCL, 1)
-
-        self.fd = fd
+class TracerouteProtocol(object):
+    def __init__(self, target, **settings):
         self.target = target
-        self.max_hops = max_hops
-        self.retries = retries
-        self.timeout = timeout
-        self.hopfound_callback = hopfound_callback
-        reactor.addReader(self)
-        reactor.addWriter(self)
+        self.settings = settings
+        self.fd = socket.socket(socket.AF_INET, socket.SOCK_RAW,
+                                socket.IPPROTO_ICMP)
+        self.fd.setsockopt(socket.IPPROTO_IP, socket.IP_HDRINCL, 1)
 
-        # response, and outgoing queue
-        self.hops = {}
+        self.hops = []
         self.out_queue = []
-        self.target_id = None
-
-        # will call the deferred when waiting is False
         self.waiting = True
         self.deferred = defer.Deferred()
 
+        reactor.addReader(self)
+        reactor.addWriter(self)
+
         # send 1st probe packet
-        for ttl in xrange(1, max_hops):
-            self.send(Hop(ttl))
+        self.out_queue.append(Hop(self.target, 1))
 
-        # start looping call to double check hops
-        t = task.LoopingCall(self.checkPending)
-        t.start(0.5)
-
-    def getRoute(self):
-        return self.deferred
+    def logPrefix(self):
+        return "TracerouteProtocol(%s)" % self.target
 
     def fileno(self):
         return self.fd.fileno()
 
-    def done(self):
-        result = []
-        self.waiting = False
-        items = sorted(self.hops.iteritems(), key=operator.itemgetter(0))
-        for (hid, hop) in items:
-            result.append(hop)
-            if hop.ip == self.target:
-                break
-
-        self.deferred.callback(result)
-
     @defer.inlineCallbacks
-    def checkPending(self):
-        pending = False
-        items = sorted(self.hops.iteritems(), key=operator.itemgetter(0))
-        for hid, hop in items:
-            if self.target_id is not None:
-                if hid > self.target_id:
-                    break
+    def hopFound(self, hop, ip, icmp):
+        hop.remote_ip = ip
+        hop.remote_icmp = icmp
 
-            if hop.found is False:
-                if hop.tries <= self.retries:
-                    pending = True
-                    if hop.last_try+self.timeout < time.time():
-                        self.send(hop)
-                        continue
-                else:
-                    hop.found = time.time()
-                    hop.ip = "??"
-            else:
-                if hop.ip != "??" and hop.location is None:
-                    hop.location = yield geolocate(hop.ip)
+        if (ip and icmp):
+            hop.found = time.time()
+            if self.settings.get("geoip_lookup") is True:
+                hop.location = yield geoip_lookup(ip.src)
 
-        if pending is False:
-            self.done()
-            defer.returnValue(False)
+            if self.settings.get("reverse_lookup") is True:
+                hop.remote_host = yield reverse_lookup(ip.src)
 
-    def send(self, hop):
-        hop.tries += 1
-        hop.last_try = time.time()
+        ttl = hop.ttl + 1
+        last = self.hops[-2:]
+        if len(last) == 2 and last[0].remote_ip == ip or \
+           (ttl > (self.settings.get("max_hops", 30) + 1)):
+            done = True
+        else:
+            done = False
 
-        ip = iphdr(dst=self.target)
-        icmp = icmphdr("traceroute")
+        if not done:
+            cb = self.settings.get("hop_callback")
+            if callable(cb):
+                yield defer.maybeDeferred(cb, hop)
 
-        ip.ttl = hop.ttl
-        ip.id += hop.ttl
-        icmp.id = ip.id
-        ip.data = icmp.assemble()
-
-        self.hops[ip.id] = hop
-        self.out_queue.append((ip.assemble(), (ip.dst, 0)))
-
-    def doWrite(self):
-        if self.out_queue and self.waiting is True:
-            pkt = self.out_queue.pop(0)
-            self.fd.sendto(*pkt)
+        if not self.waiting:
+            if self.deferred:
+                self.deferred.callback(self.hops)
+                self.deferred = None
+        else:
+            self.out_queue.append(Hop(self.target, ttl))
 
     def doRead(self):
-        if self.waiting is False:
+        if not self.waiting or not self.hops:
             return
 
-        hop_id = None
-        pkt, src = self.fd.recvfrom(4096)
+        pkt = self.fd.recv(4096)
 
         # disassemble ip header
         ip = iphdr.disassemble(pkt[:20])
         if ip.proto != socket.IPPROTO_ICMP:
             return
 
+        found = False
+
         # disassemble icmp header
         icmp = icmphdr.disassemble(pkt[20:28])
-        if icmp.type != 11:
-            if icmp.type != 0 or icmp.id not in self.hops:
-                return
-            else:
-                hop_id = icmp.id
-        else:
+        if icmp.type == 0 and icmp.id == self.hops[-1].icmp.id:
+            found = True
+        elif icmp.type == 11:
             # disassemble referenced ip header
             ref = iphdr.disassemble(pkt[28:48])
-            if not self.hops.get(ref.id):
-                return
-            hop_id = ref.id
-
-        if hop_id is not None:
-            self.hops[hop_id].found = time.time()
-            self.hops[hop_id].ip = ip.src
+            if ref.dst == self.target:
+                found = True
 
         if ip.src == self.target:
-            self.target_id = hop_id
+            self.waiting = False
 
-        if self.target_id is None or hop_id < self.target_id:
-            if callable(self.hopfound_callback):
-                self.hopfound_callback(self.hops[hop_id])
+        if found:
+            self.hopFound(self.hops[-1], ip, icmp)
+
+    def hopTimeout(self, *ign):
+        hop = self.hops[-1]
+        if not hop.found:
+            if hop.tries < self.settings.get("max_tries", 3):
+                self.out_queue.append(hop)
+            else:
+                self.hopFound(hop, None, None)
+
+    def doWrite(self):
+        if self.waiting and self.out_queue:
+            hop = self.out_queue.pop(0)
+            pkt = hop.pkt
+            if not self.hops or (self.hops and hop.ttl != self.hops[-1].ttl):
+                self.hops.append(hop)
+            self.fd.sendto(pkt, (hop.ip.dst, 0))
+
+            timeout = self.settings.get("timeout", 1)
+            reactor.callLater(timeout, self.hopTimeout)
 
     def connectionLost(self, why):
         pass
 
-    def logPrefix(self):
-        return "Traceroute(%s)" % self.target
 
-
-def hopfound_callback(hop):
-    #print "found", hop
-    sys.stdout.write(".")
-    sys.stdout.flush()
+def traceroute(target, **settings):
+    tr = TracerouteProtocol(target, **settings)
+    return tr.deferred
 
 
 @defer.inlineCallbacks
-def trace(target):
-    print("Tracing %s" % target)
-    d = Traceroute(target, hopfound_callback)
-    result = yield d.getRoute()
-    print "!"
-    for hop in result:
-        print hop
+def start_trace(target, **settings):
+    hops = yield traceroute(target, **settings)
+    if settings["hop_callback"] is None:
+        for hop in hops:
+            print hop
 
     reactor.stop()
 
 
+class Options(usage.Options):
+    optFlags = [
+        ["silent", "s", "Only print results at the end."],
+        ["no-dns", "n", "Show numeric IPs only, not their host names."],
+        ["no-geoip", "g", "Do not collect and show GeoIP information"],
+        ["help", "h", "Show this help"],
+    ]
+    optParameters = [
+        ["timeout", "t", 2, "Timeout for probe packets"],
+        ["tries", "r", 3, "How many tries before give up probing a hop"],
+        ["max_hops", "m", 30, "Max number of hops to probe"],
+    ]
+
+
 def main():
-    try:
-        target = sys.argv[1]
-    except:
-        print("use: %s target" % sys.argv[0])
+    if os.getuid() != 0:
+        print("traceroute needs root privileges for the raw socket")
         sys.exit(1)
+
+    def show(hop):
+        print hop
+
+    defaults = dict(hop_callback=show,
+                    reverse_lookup=True,
+                    geoip_lookup=True,
+                    timeout=2,
+                    max_tries=3,
+                    max_hops=30)
+
+    if len(sys.argv) < 2:
+        print("Usage: %s [options] host" % (sys.argv[0]))
+        print("%s: Try --help for usage details." % (sys.argv[0]))
+        sys.exit(1)
+
+    target = sys.argv.pop(-1) if sys.argv[-1][0] != "-" else ""
+    config = Options()
+    try:
+        config.parseOptions()
+        if not target:
+            raise
+    except usage.UsageError, e:
+        print("%s: %s" % (sys.argv[0], e))
+        print("%s: Try --help for usage details." % (sys.argv[0]))
+        sys.exit(1)
+
+    settings = defaults.copy()
+    if config.get("silent"):
+        settings["hop_callback"] = None
+    if config.get("no-dns"):
+        settings["reverse_lookup"] = False
+    if config.get("no-geoip"):
+        settings["geoip_lookup"] = False
+    if "timeout" in config:
+        settings["timeout"] = config["timeout"]
+    if "tries" in config:
+        settings["max_tries"] = config["tries"]
+    if "max_hops" in config:
+        settings["max_hops"] = config["max_hops"]
 
     try:
         target = socket.gethostbyname(target)
     except Exception, e:
-        print("Could not resolve: %s\n%s" % (target, str(e)))
+        print("could not resolve '%s': %s" % (target, str(e)))
         sys.exit(1)
 
-    if os.getuid() != 0:
-        print("Traceroute needs root privileges for the raw socket")
-        sys.exit(1)
-
-    reactor.callWhenRunning(trace, target)
+    reactor.callWhenRunning(start_trace, target, **settings)
     reactor.run()
 
 if __name__ == "__main__":
