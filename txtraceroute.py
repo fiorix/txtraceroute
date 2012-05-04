@@ -37,7 +37,6 @@ from twisted.internet import threads
 from twisted.python import usage
 from twisted.web.client import getPage
 
-
 class iphdr(object):
     """
     This represents an IP packet header.
@@ -67,10 +66,12 @@ class iphdr(object):
                              self.tos, self.length + len(self.data),
                              socket.htons(self.id), self.frag,
                              self.ttl, self.proto)
-        return header + "\x00\x00" + self.saddr + self.daddr + self.data
+        self._raw = header + "\x00\x00" + self.saddr + self.daddr + self.data
+        return self._raw
 
     @classmethod
     def disassemble(self, data):
+        self._raw = data
         ip = iphdr()
         pkt = struct.unpack('!BBHHHBBH', data[:12])
         ip.version = (pkt[0] >> 4 & 0x0f)
@@ -114,13 +115,15 @@ class tcphdr(object):
         # options += '\00'*4
         # options += struct.pack("!BB", 4, 2)
         # options += '\00'
-        return header+options
+        self._raw = header+options
+        return self._raw
 
     @classmethod
     def checksum(self, data):
         pass
 
     def disassemble(self, data):
+        self._raw = data
         tcp = tcphdr()
         pkt = struct.unpack("!HHLH", data[:20])
         tcp.sport, tcp.dport, tcp.seq = pkt[:3]
@@ -142,7 +145,9 @@ class udphdr(object):
         part1 = struct.pack("!HHH", self.sport, self.dport, self.length)
         cksum = self.checksum(self.data)
         cksum = struct.pack("!H", cksum)
-        return part1 + cksum + self.data
+
+        self._raw = part1 + cksum + self.data
+        return self._raw
 
     @classmethod
     def checksum(self, data):
@@ -151,6 +156,7 @@ class udphdr(object):
         return cksum
 
     def disassemble(self, data):
+        self._raw = udp
         udp = udphdr()
         pkt = struct.unpack("!HHHH", data)
         udp.src_port, udp.dst_port, udp.length, udp.cksum = pkt
@@ -170,7 +176,8 @@ class icmphdr(object):
         part2 = struct.pack("!HH", self.id, self.sequence)
         cksum = self.checksum(part1 + "\x00\x00" + part2 + self.data)
         cksum = struct.pack("!H", cksum)
-        return part1 + cksum + part2 + self.data
+        self._raw = part1 + cksum + part2 + self.data
+        return self._raw
 
     @classmethod
     def checksum(self, data):
@@ -185,6 +192,7 @@ class icmphdr(object):
 
     @classmethod
     def disassemble(self, data):
+        self._raw = data
         icmp = icmphdr()
         pkt = struct.unpack("!BBHHH", data)
         icmp.type, icmp.code, icmp.cksum, icmp.id, icmp.sequence = pkt
@@ -194,6 +202,29 @@ class icmphdr(object):
         return "ICMP (type %s, code %s, id %s, sequence %s)" % \
                (self.type, self.code, self.id, self.sequence)
 
+
+def pprintp(packet):
+    """
+    Used to pretty print packets.
+    """
+    lines = []
+    line = []
+    for i, byte in enumerate(packet):
+        line.append(("%.2x" % ord(byte), byte))
+        if (i + 1) % 8 == 0:
+            lines.append(line)
+            line = []
+
+    lines.append(line)
+
+    for row in lines:
+        left = ""
+        right = "   " * (8 - len(row))
+        for y in row:
+            left += "%s " % y[0]
+            right += "%s" % y[1]
+
+        print left + "     " + right
 
 @defer.inlineCallbacks
 def geoip_lookup(ip):
@@ -288,6 +319,7 @@ class TracerouteProtocol(object):
     def __init__(self, target, **settings):
         self.target = target
         self.settings = settings
+        self.verbose = settings.get("verbose")
         self.proto = settings.get("proto")
         self.rfd = socket.socket(socket.AF_INET, socket.SOCK_RAW,
                                 socket.IPPROTO_ICMP)
@@ -313,7 +345,10 @@ class TracerouteProtocol(object):
         reactor.addWriter(self)
 
         # send 1st probe packet
-        self.out_queue.append(Hop(self.target, 1, settings.get("proto"), self.settings.get("dport"), self.settings.get("sport")))
+        self.out_queue.append(Hop(self.target, 1,
+                                  settings.get("proto"),
+                                  self.settings.get("dport"),
+                                  self.settings.get("sport")))
 
     def logPrefix(self):
         return "TracerouteProtocol(%s)" % self.target
@@ -352,16 +387,24 @@ class TracerouteProtocol(object):
                 self.deferred.callback(self.hops)
                 self.deferred = None
         else:
-            self.out_queue.append(Hop(self.target, ttl, self.settings.get("proto"), self.settings.get("dport"), self.settings.get("sport")))
+            self.out_queue.append(Hop(self.target, ttl,
+                                      self.settings.get("proto"),
+                                      self.settings.get("dport"),
+                                      self.settings.get("sport")))
 
     def doRead(self):
         if not self.waiting or not self.hops:
             return
 
         pkt = self.rfd.recv(4096)
-
         # disassemble ip header
         ip = iphdr.disassemble(pkt[:20])
+
+        if self.verbose:
+            print "Got this packet:"
+            print "src %s" % ip.src
+            pprintp(pkt)
+
         if ip.proto != socket.IPPROTO_ICMP:
             return
 
@@ -428,6 +471,7 @@ class Options(usage.Options):
         ["quiet", "q", "Only print results at the end."],
         ["no-dns", "n", "Show numeric IPs only, not their host names."],
         ["no-geoip", "g", "Do not collect and show GeoIP information"],
+        ["verbose", "v", "Be more verbose"],
         ["help", "h", "Show this help"],
     ]
     optParameters = [
@@ -450,6 +494,7 @@ def main():
                     proto="icmp",
                     dport=None,
                     sport=None,
+                    verbose=False,
                     max_tries=3,
                     max_hops=30)
 
@@ -476,6 +521,8 @@ def main():
         settings["reverse_lookup"] = False
     if config.get("no-geoip"):
         settings["geoip_lookup"] = False
+    if config.get("verbose"):
+        settings["verbose"] = True
     if "timeout" in config:
         settings["timeout"] = config["timeout"]
     if "tries" in config:
