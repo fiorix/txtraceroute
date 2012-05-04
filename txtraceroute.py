@@ -29,6 +29,7 @@ import socket
 import struct
 import sys
 import time
+import random
 
 from twisted.internet import defer
 from twisted.internet import reactor
@@ -104,12 +105,15 @@ class tcphdr(object):
         header += '\00\00\00\00'
         header += struct.pack("!HHH", (self.hlen & 0xff) << 10 | (self.flags &
             0xff), self.wsize, self.cksum)
+        header += "\x00\x00"
+        options = '\x02\x04\x05\xb4\x01\x03\x03\x01\x01\x01\x08\x0a'
+        options += '\x4d\xcf\x52\x33\x00\x00\x00\x00\x04\x02\x00\x00'
         # XXX There is something wrong here fixme
-        options = struct.pack("!LBBBBBB", self.mss, 1, 3, 3, 1, 1, 1)
-        options += struct.pack("!BBL", 8, 10, 1209452188)
-        options += '\00'*4
-        options += struct.pack("!BB", 4, 2)
-        options += '\00'
+        # options = struct.pack("!LBBBBBB", self.mss, 1, 3, 3, 1, 1, 1)
+        # options += struct.pack("!BBL", 8, 10, 1209452188)
+        # options += '\00'*4
+        # options += struct.pack("!BB", 4, 2)
+        # options += '\00'
         return header+options
 
     @classmethod
@@ -213,8 +217,11 @@ def reverse_lookup(ip):
 
 
 class Hop(object):
-    def __init__(self, target, ttl, proto):
+    def __init__(self, target, ttl, proto, dport=None, sport=None):
         self.proto = proto
+        self.dport = dport
+        self.sport = sport
+
         self.found = False
         self.tries = 0
         self.last_try = 0
@@ -232,11 +239,11 @@ class Hop(object):
             self.icmp.id = self.ip.id
             self.ip.data = self.icmp.assemble()
         elif self.proto == "udp":
-            self.udp = udphdr('\00'*20)
+            self.udp = udphdr('\00'*20, self.dport, self.sport)
             self.ip.data = self.udp.assemble()
             self.ip.proto = socket.IPPROTO_UDP
         else:
-            self.tcp = tcphdr()
+            self.tcp = tcphdr('\42'*20, self.dport, self.sport)
             self.ip.data = self.tcp.assemble()
             self.ip.proto = socket.IPPROTO_TCP
 
@@ -306,7 +313,7 @@ class TracerouteProtocol(object):
         reactor.addWriter(self)
 
         # send 1st probe packet
-        self.out_queue.append(Hop(self.target, 1, settings.get("proto")))
+        self.out_queue.append(Hop(self.target, 1, settings.get("proto"), self.settings.get("dport"), self.settings.get("sport")))
 
     def logPrefix(self):
         return "TracerouteProtocol(%s)" % self.target
@@ -345,7 +352,7 @@ class TracerouteProtocol(object):
                 self.deferred.callback(self.hops)
                 self.deferred = None
         else:
-            self.out_queue.append(Hop(self.target, ttl, self.settings.get("proto")))
+            self.out_queue.append(Hop(self.target, ttl, self.settings.get("proto"), self.settings.get("dport"), self.settings.get("sport")))
 
     def doRead(self):
         if not self.waiting or not self.hops:
@@ -418,7 +425,7 @@ def start_trace(target, **settings):
 
 class Options(usage.Options):
     optFlags = [
-        ["silent", "s", "Only print results at the end."],
+        ["queit", "q", "Only print results at the end."],
         ["no-dns", "n", "Show numeric IPs only, not their host names."],
         ["no-geoip", "g", "Do not collect and show GeoIP information"],
         ["help", "h", "Show this help"],
@@ -427,7 +434,9 @@ class Options(usage.Options):
         ["timeout", "t", 2, "Timeout for probe packets"],
         ["tries", "r", 3, "How many tries before give up probing a hop"],
         ["proto", "p", "icmp", "What protocol to use (tcp, udp, icmp)"],
-        ["max_hops", "m", 30, "Max number of hops to probe"],
+        ["dport", "d", random.randint(2**10, 2**16), "Destination port (TCP and UDP only)"],
+        ["sport", "s", random.randint(2**10, 2**16), "Source port (TCP and UDP only)"],
+        ["max_hops", "m", 30, "Max number of hops to probe"]
     ]
 
 def main():
@@ -439,6 +448,8 @@ def main():
                     geoip_lookup=True,
                     timeout=2,
                     proto="icmp",
+                    dport=None,
+                    sport=None,
                     max_tries=3,
                     max_hops=30)
 
@@ -473,6 +484,10 @@ def main():
         settings["proto"] = config["proto"]
     if "max_hops" in config:
         settings["max_hops"] = config["max_hops"]
+    if "dport" in config:
+        settings["dport"] = int(config["dport"])
+    if "sport" in config:
+        settings["sport"] = int(config["sport"])
 
     if os.getuid() != 0:
         print("traceroute needs root privileges for the raw socket")
