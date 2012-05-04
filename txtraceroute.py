@@ -67,7 +67,7 @@ class iphdr(object):
                              self.tos, self.length + len(self.data),
                              socket.htons(self.id), self.frag,
                              self.ttl, self.proto)
-        return header + "\000\000" + self.saddr + self.daddr + self.data
+        return header + "\x00\x00" + self.saddr + self.daddr + self.data
 
     @classmethod
     def disassemble(self, data):
@@ -425,7 +425,7 @@ def start_trace(target, **settings):
 
 class Options(usage.Options):
     optFlags = [
-        ["queit", "q", "Only print results at the end."],
+        ["quiet", "q", "Only print results at the end."],
         ["no-dns", "n", "Show numeric IPs only, not their host names."],
         ["no-geoip", "g", "Do not collect and show GeoIP information"],
         ["help", "h", "Show this help"],
