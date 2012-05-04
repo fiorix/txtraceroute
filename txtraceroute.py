@@ -102,7 +102,7 @@ class tcphdr(object):
 
     def assemble(self):
         header = struct.pack("!HHL", self.sport, self.dport, self.seq)
-        header += '\00\00\00\00'
+        header += '\x00\x00\x00\x00'
         header += struct.pack("!HHH", (self.hlen & 0xff) << 10 | (self.flags &
             0xff), self.wsize, self.cksum)
         header += "\x00\x00"
@@ -168,14 +168,14 @@ class icmphdr(object):
     def assemble(self):
         part1 = struct.pack("BB", self.type, self.code)
         part2 = struct.pack("!HH", self.id, self.sequence)
-        cksum = self.checksum(part1 + "\000\000" + part2 + self.data)
+        cksum = self.checksum(part1 + "\x00\x00" + part2 + self.data)
         cksum = struct.pack("!H", cksum)
         return part1 + cksum + part2 + self.data
 
     @classmethod
     def checksum(self, data):
         if len(data) & 1:
-            data += "\0"
+            data += "\x00"
         cksum = reduce(operator.add,
                        struct.unpack('!%dH' % (len(data) >> 1), data))
         cksum = (cksum >> 16) + (cksum & 0xffff)
@@ -235,15 +235,15 @@ class Hop(object):
         self.ip.ttl = ttl
         self.ip.id += ttl
         if self.proto == "icmp":
-            self.icmp = icmphdr('\00'*20)
+            self.icmp = icmphdr('\x00'*20)
             self.icmp.id = self.ip.id
             self.ip.data = self.icmp.assemble()
         elif self.proto == "udp":
-            self.udp = udphdr('\00'*20, self.dport, self.sport)
+            self.udp = udphdr('\x00'*20, self.dport, self.sport)
             self.ip.data = self.udp.assemble()
             self.ip.proto = socket.IPPROTO_UDP
         else:
-            self.tcp = tcphdr('\42'*20, self.dport, self.sport)
+            self.tcp = tcphdr('\x42'*20, self.dport, self.sport)
             self.ip.data = self.tcp.assemble()
             self.ip.proto = socket.IPPROTO_TCP
 
