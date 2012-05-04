@@ -90,7 +90,7 @@ class iphdr(object):
 
 class tcphdr(object):
     def __init__(self, data="", dport=4242, sport=4242):
-        self.seq = 123132
+        self.seq = 0
         self.hlen = 44
         self.flags = 2
         self.wsize = 200
