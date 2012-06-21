@@ -460,9 +460,22 @@ def traceroute(target, **settings):
 @defer.inlineCallbacks
 def start_trace(target, **settings):
     hops = yield traceroute(target, **settings)
+    last_hop = hops[-1]
+    last_stats = last_hop.get()
     if settings["hop_callback"] is None:
-        for hop in hops:
-            print hop
+        print last_hop
+
+    if settings['serial']:
+        import serial
+        ser = serial.Serial(
+                port=settings['serial'],
+                baudrate=9600)
+        ser.open()
+        ser.write('?f')
+        ser.write(last_hop.remote_ip.src)
+        ser.write('?n')
+        ser.write("%0.3fs" % last_stats['ping'])
+        ser.close()
 
     reactor.stop()
 
@@ -480,7 +493,8 @@ class Options(usage.Options):
         ["proto", "p", "icmp", "What protocol to use (tcp, udp, icmp)"],
         ["dport", "d", random.randint(2**10, 2**16), "Destination port (TCP and UDP only)"],
         ["sport", "s", random.randint(2**10, 2**16), "Source port (TCP and UDP only)"],
-        ["max_hops", "m", 30, "Max number of hops to probe"]
+        ["max_hops", "m", 30, "Max number of hops to probe"],
+        ["serial", "S", None, "Output last hop to serial"]
     ]
 
 def main():
@@ -494,6 +508,7 @@ def main():
                     proto="icmp",
                     dport=None,
                     sport=None,
+                    serial=None,
                     verbose=False,
                     max_tries=3,
                     max_hops=30)
@@ -515,7 +530,7 @@ def main():
         sys.exit(1)
 
     settings = defaults.copy()
-    if config.get("silent"):
+    if config.get("quiet"):
         settings["hop_callback"] = None
     if config.get("no-dns"):
         settings["reverse_lookup"] = False
@@ -535,6 +550,8 @@ def main():
         settings["dport"] = int(config["dport"])
     if "sport" in config:
         settings["sport"] = int(config["sport"])
+    if "serial" in config and config['serial']:
+        settings["serial"] = config["serial"]
 
     if os.getuid() != 0:
         print("traceroute needs root privileges for the raw socket")
