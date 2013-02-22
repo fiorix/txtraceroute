@@ -371,7 +371,7 @@ class TracerouteProtocol(object):
 
         ttl = hop.ttl + 1
         last = self.hops[-2:]
-        if (len(last) == 2 and last[0].remote_ip == ip) or \
+        if (ip is not None and len(last) == 2 and last[0].remote_ip == ip) or \
            (ttl > (self.settings.get("max_hops", 30) + 1)):
             done = True
         else:
