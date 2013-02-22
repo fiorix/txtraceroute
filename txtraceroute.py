@@ -382,7 +382,7 @@ class TracerouteProtocol(object):
             if callable(cb):
                 yield defer.maybeDeferred(cb, hop)
 
-        if not self.waiting:
+        if not self.waiting or done:
             if self.deferred:
                 self.deferred.callback(self.hops)
                 self.deferred = None
