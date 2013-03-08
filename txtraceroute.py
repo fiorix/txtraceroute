@@ -37,6 +37,7 @@ from twisted.internet import threads
 from twisted.python import usage
 from twisted.web.client import getPage
 
+
 class iphdr(object):
     """
     This represents an IP packet header.
@@ -89,6 +90,7 @@ class iphdr(object):
                (self.tos, self.ttl, self.id, self.frag, self.proto,
                 self.length, self.src, self.dst)
 
+
 class tcphdr(object):
     def __init__(self, data="", dport=4242, sport=4242):
         self.seq = 0
@@ -115,7 +117,7 @@ class tcphdr(object):
         # options += '\00'*4
         # options += struct.pack("!BB", 4, 2)
         # options += '\00'
-        self._raw = header+options
+        self._raw = header + options
         return self._raw
 
     @classmethod
@@ -127,10 +129,11 @@ class tcphdr(object):
         tcp = tcphdr()
         pkt = struct.unpack("!HHLH", data[:20])
         tcp.sport, tcp.dport, tcp.seq = pkt[:3]
-        tcp.hlen = (pkt[4] >> 10 ) & 0xff
-        tcp.flags = pkf[4] & 0xff
+        tcp.hlen = (pkt[4] >> 10) & 0xff
+        tcp.flags = pkt[4] & 0xff
         tcp.wsize, tcp.cksum = struct.unpack("!HH", data[20:28])
         return tcp
+
 
 class udphdr(object):
     def __init__(self, data="", dport=4242, sport=4242):
@@ -156,11 +159,12 @@ class udphdr(object):
         return cksum
 
     def disassemble(self, data):
-        self._raw = udp
+        self._raw = data
         udp = udphdr()
         pkt = struct.unpack("!HHHH", data)
         udp.src_port, udp.dst_port, udp.length, udp.cksum = pkt
         return udp
+
 
 class icmphdr(object):
     def __init__(self, data=""):
@@ -226,6 +230,7 @@ def pprintp(packet):
 
         print left + "     " + right
 
+
 @defer.inlineCallbacks
 def geoip_lookup(ip):
     try:
@@ -266,15 +271,15 @@ class Hop(object):
         self.ip.ttl = ttl
         self.ip.id += ttl
         if self.proto == "icmp":
-            self.icmp = icmphdr('\x00'*20)
+            self.icmp = icmphdr('\x00' * 20)
             self.icmp.id = self.ip.id
             self.ip.data = self.icmp.assemble()
         elif self.proto == "udp":
-            self.udp = udphdr('\x00'*20, self.dport, self.sport)
+            self.udp = udphdr('\x00' * 20, self.dport, self.sport)
             self.ip.data = self.udp.assemble()
             self.ip.proto = socket.IPPROTO_UDP
         else:
-            self.tcp = tcphdr('\x42'*20, self.dport, self.sport)
+            self.tcp = tcphdr('\x42' * 20, self.dport, self.sport)
             self.ip.data = self.tcp.assemble()
             self.ip.proto = socket.IPPROTO_TCP
 
@@ -479,6 +484,7 @@ def start_trace(target, **settings):
 
     reactor.stop()
 
+
 class Options(usage.Options):
     optFlags = [
         ["quiet", "q", "Only print results at the end."],
@@ -491,11 +497,14 @@ class Options(usage.Options):
         ["timeout", "t", 2, "Timeout for probe packets"],
         ["tries", "r", 3, "How many tries before give up probing a hop"],
         ["proto", "p", "icmp", "What protocol to use (tcp, udp, icmp)"],
-        ["dport", "d", random.randint(2**10, 2**16), "Destination port (TCP and UDP only)"],
-        ["sport", "s", random.randint(2**10, 2**16), "Source port (TCP and UDP only)"],
+        ["dport", "d", random.randint(2 ** 10, 2 ** 16),
+                                    "Destination port (TCP and UDP only)"],
+        ["sport", "s", random.randint(2 ** 10, 2 ** 16),
+                                    "Source port (TCP and UDP only)"],
         ["max_hops", "m", 30, "Max number of hops to probe"],
         ["serial", "S", None, "Output last hop to serial"]
     ]
+
 
 def main():
     def show(hop):
@@ -553,7 +562,7 @@ def main():
     if "serial" in config and config['serial']:
         settings["serial"] = config["serial"]
 
-    if os.getuid() != 0:
+    if hasattr(os, "getuid") and os.getuid():
         print("traceroute needs root privileges for the raw socket")
         sys.exit(1)
     try:
@@ -567,4 +576,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
