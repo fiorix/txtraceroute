@@ -50,7 +50,7 @@ class iphdr(object):
         self.hlen = 5
         self.tos = 0
         self.length = 20
-        self.id = os.getpid()
+        self.id = random.randint(2 ** 10, 2 ** 16)
         self.frag = 0
         self.ttl = 255
         self.proto = proto
@@ -171,7 +171,7 @@ class icmphdr(object):
         self.type = 8
         self.code = 0
         self.cksum = 0
-        self.id = os.getpid()
+        self.id = random.randint(2 ** 10, 2 ** 16)
         self.sequence = 0
         self.data = data
 
