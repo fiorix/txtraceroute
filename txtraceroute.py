@@ -431,8 +431,7 @@ class TracerouteProtocol(object):
         if found:
             self.hopFound(self.hops[-1], ip, icmp)
 
-    def hopTimeout(self, *ign):
-        hop = self.hops[-1]
+    def hopTimeout(self, hop, *ign):
         if not hop.found:
             if hop.tries < self.settings.get("max_tries", 3):
                 # retry
@@ -451,7 +450,7 @@ class TracerouteProtocol(object):
             self.sfd.sendto(pkt, (hop.ip.dst, 0))
 
             timeout = self.settings.get("timeout", 1)
-            reactor.callLater(timeout, self.hopTimeout)
+            reactor.callLater(timeout, self.hopTimeout, hop)
 
     def connectionLost(self, why):
         pass
@@ -550,7 +549,7 @@ def main():
     if "timeout" in config:
         settings["timeout"] = config["timeout"]
     if "tries" in config:
-        settings["max_tries"] = config["tries"]
+        settings["max_tries"] = int(config["tries"])
     if "proto" in config:
         settings["proto"] = config["proto"]
     if "max_hops" in config:
